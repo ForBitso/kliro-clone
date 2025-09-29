@@ -2,10 +2,12 @@ package controllers
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -99,6 +101,9 @@ type VehicleData struct {
 		Click string `json:"click"`
 		Payme string `json:"payme"`
 	} `json:"pay_urls"`
+	PaymePayload     *string   `json:"payme_payload"`
+	PaymeResponseRaw *string   `json:"payme_response_raw"`
+	PaymentInitAt    time.Time `json:"payment_init_at"`
 }
 
 type UnifiedController struct {
@@ -1674,15 +1679,31 @@ func (c *UnifiedController) Submit(ctx *gin.Context) {
 			return
 		}
 
-		// Generate payment URLs
-		clickURL, err := c.generateClickPaymentURL(amount, trustCreateResp.UUID, merchantInfo)
+		// Generate payment URLs using anketa_id instead of providerUuid
+		anketaIDStr := fmt.Sprintf("%d", trustCreateResp.AnketaID)
+		fmt.Printf("=== PAYMENT URL GENERATION ===\n")
+		fmt.Printf("Using anketa_id: %s (instead of providerUuid: %s)\n", anketaIDStr, trustCreateResp.UUID)
+
+		clickURL, err := c.generateClickPaymentURL(amount, anketaIDStr, merchantInfo)
 		if err != nil {
 			fmt.Printf("ERROR: Failed to generate Click URL: %v\n", err)
 			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate Click URL", "details": err.Error()})
 			return
 		}
 
-		paymeURL, err := c.generatePaymePaymentURL(amount, trustCreateResp.AnketaID, trustCreateResp.UUID, merchantInfo)
+		// Generate Payme URL using universal function
+		returnURL := fmt.Sprintf("https://ersp.e-osgo.uz/uz/site/export-to-pdf?id=%s", anketaIDStr)
+		paymeURL, paymePayload, err := GeneratePaymePayment(
+			context.Background(),
+			merchantInfo.Payme.MerchantID,
+			c.config.PaymeKey,
+			int64(trustCreateResp.AnketaID),
+			amount,
+			returnURL,
+			c.config.PaymeOrderKeyName,
+			c.config.PaymeUsePost,
+			c.config.PaymeInitURL,
+		)
 		if err != nil {
 			fmt.Printf("ERROR: Failed to generate Payme URL: %v\n", err)
 			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate Payme URL", "details": err.Error()})
@@ -1724,6 +1745,10 @@ func (c *UnifiedController) Submit(ctx *gin.Context) {
 			Click: clickURL,
 			Payme: paymeURL,
 		}
+		// Save Payme-specific data for debugging and future use
+		paymePayloadStr := string(paymePayload)
+		vehicleData.PaymePayload = &paymePayloadStr
+		vehicleData.PaymentInitAt = time.Now()
 		store.M[request.UUID] = vehicleData
 		store.Unlock()
 
@@ -1764,33 +1789,66 @@ func formatDateToDDMMYYYY(dateStr string) string {
 	return fmt.Sprintf("%s.%s.%s", parts[2], parts[1], parts[0])
 }
 
-func (c *UnifiedController) generateClickPaymentURL(amount int64, providerUuid string, merchantInfo *MerchantInfo) (string, error) {
+func (c *UnifiedController) generateClickPaymentURL(amount int64, anketaID string, merchantInfo *MerchantInfo) (string, error) {
 	amountFormatted := fmt.Sprintf("%.2f", float64(amount))
-	returnURL := fmt.Sprintf("https://ersp.e-osgo.uz/uz/site/export-to-pdf?id=%s", providerUuid)
+	returnURL := fmt.Sprintf("https://ersp.e-osgo.uz/uz/site/export-to-pdf?id=%s", anketaID)
 
 	clickURL := fmt.Sprintf("https://my.click.uz/services/pay?service_id=%s&merchant_id=%s&amount=%s&transaction_param=%s&return_url=%s",
 		merchantInfo.Click.ServiceID,
 		merchantInfo.Click.MerchantID,
 		url.QueryEscape(amountFormatted),
-		url.QueryEscape(providerUuid),
+		url.QueryEscape(anketaID),
 		url.QueryEscape(returnURL))
 
 	return clickURL, nil
 }
 
-func (c *UnifiedController) generatePaymePaymentURL(amount int64, anketaID int, providerUuid string, merchantInfo *MerchantInfo) (string, error) {
+func (c *UnifiedController) generatePaymePaymentURL(amount int64, anketaID int, anketaIDStr string, merchantInfo *MerchantInfo) (string, error) {
 	merchantID := merchantInfo.Payme.MerchantID
-	orderID := fmt.Sprintf("%d", anketaID)
-	amountInTiyin := amount
-	returnURL := fmt.Sprintf("https://ersp.e-osgo.uz/uz/site/export-to-pdf?id=%s", providerUuid)
 
-	params := fmt.Sprintf("m=%s;ac.order_id=%s;a=%d;c=%s;l=uz",
-		merchantID, orderID, amountInTiyin, returnURL)
+	if merchantID == "" {
+		return "", fmt.Errorf("merchant ID is empty")
+	}
 
-	encodedParams := base64.StdEncoding.EncodeToString([]byte(params))
-	paymeURL := fmt.Sprintf("https://checkout.paycom.uz/%s", url.QueryEscape(encodedParams))
+	returnURL := fmt.Sprintf("https://ersp.e-osgo.uz/uz/site/export-to-pdf?id=%s", anketaIDStr)
 
-	return paymeURL, nil
+	// Используем универсальную функцию GeneratePaymePayment
+	paymeURL, _, err := GeneratePaymePayment(
+		context.Background(),
+		merchantID,
+		c.config.PaymeKey,
+		int64(anketaID),
+		amount,
+		returnURL,
+		c.config.PaymeOrderKeyName,
+		c.config.PaymeUsePost,
+		c.config.PaymeInitURL,
+	)
+
+	return paymeURL, err
+}
+
+// generatePaymeUrl создает корректную ссылку для Payme согласно документации
+func generatePaymeUrl(merchantId string, orderId int, amountSum int64, returnUrl string) string {
+	// Используем универсальную функцию GeneratePaymePayment с дефолтными параметрами
+	paymeURL, _, err := GeneratePaymePayment(
+		context.Background(),
+		merchantId,
+		"", // merchantKey - пустой для простой функции
+		int64(orderId),
+		amountSum,
+		returnUrl,
+		"ac.key", // дефолтное значение
+		false,    // usePost - false для простой функции
+		"",       // postURL - пустой
+	)
+
+	if err != nil {
+		log.Printf("Error generating Payme URL: %v", err)
+		return ""
+	}
+
+	return paymeURL
 }
 
 func (c *UnifiedController) callTrustPaymentCheckAPI(request TrustPaymentCheckRequest) (*TrustPaymentCheckResponse, error) {
@@ -1883,6 +1941,11 @@ func (c *UnifiedController) getMerchantInfo() (*MerchantInfo, error) {
 		return nil, fmt.Errorf("failed to unmarshal merchant info response: %v", err)
 	}
 
+	fmt.Printf("=== MERCHANT INFO VALIDATION ===\n")
+	fmt.Printf("Click ServiceID: '%s'\n", merchantInfo.Click.ServiceID)
+	fmt.Printf("Click MerchantID: '%s'\n", merchantInfo.Click.MerchantID)
+	fmt.Printf("Payme MerchantID: '%s'\n", merchantInfo.Payme.MerchantID)
+
 	if merchantInfo.Click.ServiceID == "" || merchantInfo.Click.MerchantID == "" || merchantInfo.Payme.MerchantID == "" {
 		return nil, fmt.Errorf("merchant info missing required fields: %+v", merchantInfo)
 	}
@@ -1925,4 +1988,106 @@ func (c *UnifiedController) CheckPayment(ctx *gin.Context) {
 		"message":   paymentCheckResp.Message,
 		"error":     paymentCheckResp.Error,
 	})
+}
+
+// GeneratePaymePayment - универсальная функция для генерации Payme URL с поддержкой POST и GET fallback
+func GeneratePaymePayment(ctx context.Context, merchantID, merchantKey string, anketaID int64, amountUZS int64, returnURL string, orderKeyName string, usePost bool, postURL string) (string, []byte, error) {
+	// Проверка входных параметров
+	if merchantID == "" || anketaID == 0 || amountUZS <= 0 {
+		return "", nil, fmt.Errorf("invalid input parameters")
+	}
+
+	// Вычисляем сумму в тийинах
+	amountInTiyin := amountUZS * 100
+	if amountInTiyin < amountUZS { // Проверка переполнения
+		return "", nil, fmt.Errorf("amount overflow: %d * 100", amountUZS)
+	}
+
+	log.Printf("=== PAYME PAYMENT GENERATION ===")
+	log.Printf("Merchant ID: %s", merchantID)
+	log.Printf("Anketa ID: %d", anketaID)
+	log.Printf("Amount UZS: %d", amountUZS)
+	log.Printf("Amount in tiyin: %d", amountInTiyin)
+	log.Printf("Return URL: %s", returnURL)
+	log.Printf("Order Key Name: %s", orderKeyName)
+	log.Printf("Use POST: %v", usePost)
+	log.Printf("POST URL: %s", postURL)
+
+	// Попытка POST-инициализации
+	if usePost && postURL != "" {
+		log.Printf("Attempting POST initialization...")
+
+		// Формируем тело запроса
+		body := map[string]interface{}{
+			"merchant_id": merchantID,
+			"order_id":    anketaID,
+			"amount":      amountInTiyin,
+			"currency":    20000,
+			"return_url":  returnURL,
+		}
+
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			log.Printf("Failed to marshal POST body: %v", err)
+		} else {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, bytes.NewReader(jsonBody))
+			if err != nil {
+				log.Printf("Failed to create POST request: %v", err)
+			} else {
+				req.Header.Set("Content-Type", "application/json")
+
+				// Попытка аутентификации
+				if merchantKey != "" {
+					req.SetBasicAuth("Paycom", merchantKey)
+				}
+
+				client := &http.Client{Timeout: 10 * time.Second}
+				resp, err := client.Do(req)
+				if err != nil {
+					log.Printf("POST request failed: %v", err)
+				} else {
+					defer resp.Body.Close()
+					rawResponse, _ := io.ReadAll(resp.Body)
+
+					log.Printf("POST response status: %d", resp.StatusCode)
+					log.Printf("POST response body: %s", string(rawResponse))
+
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						// Пытаемся извлечь checkout_url из ответа
+						var respObj map[string]interface{}
+						if err := json.Unmarshal(rawResponse, &respObj); err == nil {
+							if checkoutURL, ok := respObj["checkout_url"].(string); ok && checkoutURL != "" {
+								log.Printf("POST successful, checkout URL: %s", checkoutURL)
+								return checkoutURL, rawResponse, nil
+							}
+							if url, ok := respObj["url"].(string); ok && url != "" {
+								log.Printf("POST successful, URL: %s", url)
+								return url, rawResponse, nil
+							}
+						}
+					}
+
+					log.Printf("POST failed or no valid URL in response, falling back to GET")
+				}
+			}
+		}
+	}
+
+	// GET/base64 fallback
+	log.Printf("Using GET/base64 fallback...")
+
+	// Формируем строку параметров в правильном порядке
+	params := fmt.Sprintf("%s;ct=20000;m=%s;%s=%d;a=%d",
+		returnURL, merchantID, orderKeyName, anketaID, amountInTiyin)
+
+	log.Printf("Params string: %s", params)
+
+	// Кодируем в base64
+	encoded := base64.StdEncoding.EncodeToString([]byte(params))
+	paymeURL := "https://checkout.paycom.uz/" + encoded
+
+	log.Printf("Encoded params: %s", encoded)
+	log.Printf("Final Payme URL: %s", paymeURL)
+
+	return paymeURL, []byte(params), nil
 }

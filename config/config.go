@@ -33,10 +33,14 @@ type Config struct {
 	TrustLogin    string
 	TrustPassword string
 	// Payment system settings
-	ClickServiceID   string
-	ClickMerchantID  string
-	PaymeMerchantID  string
-	PaymentReturnURL string
+	ClickServiceID    string
+	ClickMerchantID   string
+	PaymeMerchantID   string
+	PaymeKey          string
+	PaymeInitURL      string
+	PaymeOrderKeyName string
+	PaymeUsePost      bool
+	PaymentReturnURL  string
 }
 
 func LoadConfig() *Config {
@@ -45,32 +49,36 @@ func LoadConfig() *Config {
 		log.Println("No .env file found, using environment variables")
 	}
 	return &Config{
-		DBHost:           os.Getenv("DB_HOST"),
-		DBPort:           os.Getenv("DB_PORT"),
-		DBUser:           os.Getenv("DB_USER"),
-		DBPassword:       os.Getenv("DB_PASSWORD"),
-		DBName:           os.Getenv("DB_NAME"),
-		JWTSecret:        os.Getenv("JWT_SECRET"),
-		Port:             os.Getenv("PORT"),
-		SMTPHost:         os.Getenv("SMTP_HOST"),
-		SMTPPort:         os.Getenv("SMTP_PORT"),
-		SMTPUser:         os.Getenv("SMTP_USER"),
-		SMTPPass:         os.Getenv("SMTP_PASS"),
-		GoogleClientID:   os.Getenv("GOOGLE_CLIENT_ID"),
-		GoogleSecret:     os.Getenv("GOOGLE_CLIENT_SECRET"),
-		GoogleRedirect:   os.Getenv("GOOGLE_REDIRECT_URI"),
-		EskizEmail:       os.Getenv("ESKIZ_EMAIL"),
-		EskizPassword:    os.Getenv("ESKIZ_PASSWORD"),
-		NeoBaseURL:       getenvOrDefault("NEO_BASE_URL", "https://api.neoinsurance.uz"),
-		NeoLogin:         os.Getenv("NEO_LOGIN"),
-		NeoPassword:      os.Getenv("NEO_PASSWORD"),
-		TrustBaseURL:     getenvOrDefault("TRUST_BASE_URL", "https://api.online-trust.uz"),
-		TrustLogin:       os.Getenv("TRUST_LOGIN"),
-		TrustPassword:    os.Getenv("TRUST_PASSWORD"),
-		ClickServiceID:   os.Getenv("CLICK_SERVICE_ID"),
-		ClickMerchantID:  os.Getenv("CLICK_MERCHANT_ID"),
-		PaymeMerchantID:  os.Getenv("PAYME_MERCHANT_ID"),
-		PaymentReturnURL: getenvOrDefault("PAYMENT_RETURN_URL", "https://your-domain.com/payment/return"),
+		DBHost:            os.Getenv("DB_HOST"),
+		DBPort:            os.Getenv("DB_PORT"),
+		DBUser:            os.Getenv("DB_USER"),
+		DBPassword:        os.Getenv("DB_PASSWORD"),
+		DBName:            os.Getenv("DB_NAME"),
+		JWTSecret:         os.Getenv("JWT_SECRET"),
+		Port:              os.Getenv("PORT"),
+		SMTPHost:          os.Getenv("SMTP_HOST"),
+		SMTPPort:          os.Getenv("SMTP_PORT"),
+		SMTPUser:          os.Getenv("SMTP_USER"),
+		SMTPPass:          os.Getenv("SMTP_PASS"),
+		GoogleClientID:    os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleSecret:      os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirect:    os.Getenv("GOOGLE_REDIRECT_URI"),
+		EskizEmail:        os.Getenv("ESKIZ_EMAIL"),
+		EskizPassword:     os.Getenv("ESKIZ_PASSWORD"),
+		NeoBaseURL:        getenvOrDefault("NEO_BASE_URL", "https://api.neoinsurance.uz"),
+		NeoLogin:          os.Getenv("NEO_LOGIN"),
+		NeoPassword:       os.Getenv("NEO_PASSWORD"),
+		TrustBaseURL:      getenvOrDefault("TRUST_BASE_URL", "https://api.online-trust.uz"),
+		TrustLogin:        os.Getenv("TRUST_LOGIN"),
+		TrustPassword:     os.Getenv("TRUST_PASSWORD"),
+		ClickServiceID:    os.Getenv("CLICK_SERVICE_ID"),
+		ClickMerchantID:   os.Getenv("CLICK_MERCHANT_ID"),
+		PaymeMerchantID:   os.Getenv("PAYME_MERCHANT_ID"),
+		PaymeKey:          os.Getenv("PAYME_KEY"),
+		PaymeInitURL:      os.Getenv("PAYME_INIT_URL"),
+		PaymeOrderKeyName: getenvOrDefault("PAYME_ORDER_KEY_NAME", "ac.key"),
+		PaymeUsePost:      os.Getenv("PAYME_USE_POST") == "true",
+		PaymentReturnURL:  getenvOrDefault("PAYMENT_RETURN_URL", "https://your-domain.com/payment/return"),
 	}
 }
 
